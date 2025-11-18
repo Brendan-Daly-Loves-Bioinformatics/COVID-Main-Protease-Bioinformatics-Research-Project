@@ -181,6 +181,9 @@ print("Mutation Site RMSD:", mutation_rmsd)
 # about the functionalities it might change
 
 """RMSF (Root Mean Square Fluctuation) Calculations"""
+"""Disclaimer: This is psuedo RMSF done by Modeller, which creates predicted models.
+This data will be standardized to be as accurate as possible without having multiple 
+official models on the PDB."""
 
 parser = PDBParser(QUIET=True)
 
@@ -230,3 +233,4 @@ print("Pseudo-RMSF per residue:")
 for resid, value in zip(resids, rmsf):
     print(f"Residue {resid} RMSF: {value} Å")
 
+"""Standardizing RMSF Values"""
