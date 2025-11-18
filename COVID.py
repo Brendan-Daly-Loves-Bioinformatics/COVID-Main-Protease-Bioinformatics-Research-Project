@@ -110,19 +110,42 @@ elif " " in clean_Mut_structure[0]:
 else:
     raise ValueError("No chain A or blank chain found in mutant structure")
 
-# Get alpha carbons (CA is alpha carbon in Bio.PDB)
-def get_CA_atoms(chain):
-    return [res["CA"] for res in chain if "CA" in res]
+# This function was necessary because using only alpha carbons for RMSD gave data with less
+# Value to the project. In order to take the RMSD using heavy atoms however, the atoms
+# must match in both the wild type and the mutant, which was a problem without this
+# function for the mutation site proline vs histidine
+def get_matching_heavy_atoms(chain1, chain2, res_ids=None):
+    atoms1, atoms2 = [], []
 
-# Extracts alpha carbons
-WT_CA = get_CA_atoms(WT_chain)
-Mut_CA = get_CA_atoms(Mut_chain)
+    # Select residues
+    if res_ids is None:
+        res_ids1 = [res.id[1] for res in chain1]
+        res_ids2 = [res.id[1] for res in chain2]
+        res_ids = sorted(set(res_ids1) & set(res_ids2))  # only shared residues
 
-# Aligns the chains as accurately as possible to avoid overestimated RMSD values (important!)
-super_imposer = Superimposer()
-super_imposer.set_atoms(WT_CA, Mut_CA)
-# Only Apply to the mutant structure to align with the wild type structure
-super_imposer.apply(clean_Mut_structure.get_atoms())
+    # Match atoms residue by residue
+    res1_map = {res.id[1]: res for res in chain1}
+    res2_map = {res.id[1]: res for res in chain2}
+
+    for res_id in res_ids:
+        if res_id in res1_map and res_id in res2_map:
+            atoms_res1 = {atom.name: atom for atom in res1_map[res_id] if atom.element != 'H'}
+            atoms_res2 = {atom.name: atom for atom in res2_map[res_id] if atom.element != 'H'}
+            shared_atoms = set(atoms_res1.keys()) & set(atoms_res2.keys())
+            for atom_name in sorted(shared_atoms):
+                atoms1.append(atoms_res1[atom_name])
+                atoms2.append(atoms_res2[atom_name])
+
+    return atoms1, atoms2
+
+# This function calculates RMSD for given chains or specific residues
+def calc_rmsd(chain1, chain2, res_ids=None):
+    atoms1, atoms2 = get_matching_heavy_atoms(chain1, chain2, res_ids)
+    sup = Superimposer()
+    sup.set_atoms(atoms1, atoms2)
+    return sup.rms
+
+"""Amino Acid Sequences"""
 
 # Print amino acid sequence
 ppb = PPBuilder()
@@ -135,20 +158,75 @@ print("Mutant amino acid sequence:")
 for pp in ppb.build_peptides(clean_Mut_structure):
     print(pp.get_sequence())
 
-"""Global RMSD (The entire chain)"""
+"""RMSD (Root Mean Square Deviation) Calculations"""
 
-print("Global RMSD:", super_imposer.rms, "Å")
+"""Global RMSD"""
 
-"""Active site RMSD (His41-Cys145)"""
+global_rmsd = calc_rmsd(WT_chain, Mut_chain)
+print("Global RMSD:", global_rmsd)
+# A global RMSD of 0.758 confirms the overall structures are almost identical
 
-# Catalytic dyad residue IDs
-active_ids = [41, 145]
+"""Active site RMSD (His41, Cys145)"""
 
-# This function will allow me to extract alpha carbons for specific residues in a chain
-def get_specific_residues(chain, ids):
-    atoms = []
-    for residue in chain:
-        if residue.id[1] in ids and "CA" in residue:
-            atoms.append(residue["CA"])
-    return atoms
+active_rmsd = calc_rmsd(WT_chain, Mut_chain, res_ids=[41, 145])
+print("Active Site RMSD:", active_rmsd)
+# An active site RMSD of 0.303 confirms the active site structures are almost identical
+
+"""Mutation site RMSD (Residue 132 ± 3 Residues)"""
+
+mutation_rmsd = calc_rmsd(WT_chain, Mut_chain, res_ids=[129,130,131,132,133,134,135])
+print("Mutation Site RMSD:", mutation_rmsd)
+# A mutation site RMSD of 0.538 shows that the proline to histidine mutation
+# has a very small impact structurally. However, this alone doesn't tell us
+# about the functionalities it might change
+
+"""RMSF (Root Mean Square Fluctuation) Calculations"""
+
+parser = PDBParser(QUIET=True)
+
+# Import all the new Modeller files in separately to avoid errors
+m1 = parser.get_structure("m1", "Mut_clean.B99990001.pdb")
+m2 = parser.get_structure("m2", "Mut_clean.B99990002.pdb")
+m3 = parser.get_structure("m3", "Mut_clean.B99990003.pdb")
+m4 = parser.get_structure("m4", "Mut_clean.B99990004.pdb")
+m5 = parser.get_structure("m5", "Mut_clean.B99990005.pdb")
+m6 = parser.get_structure("m6", "Mut_clean.B99990006.pdb")
+m7 = parser.get_structure("m7", "Mut_clean.B99990007.pdb")
+m8 = parser.get_structure("m8", "Mut_clean.B99990008.pdb")
+m9 = parser.get_structure("m9", "Mut_clean.B99990009.pdb")
+m10 = parser.get_structure("m10", "Mut_clean.B99990010.pdb")
+
+models = [m1, m2, m3, m4, m5, m6, m7, m8, m9, m10]
+
+# extracts alpha carbons by residue, as this is better for RMSF using Modeller
+def get_ca_by_residue(model):
+    chain = model[0]["A"]  # assumes chain A
+    coords = {}
+    for res in chain:
+        if "CA" in res:
+            coords[res.id[1]] = res["CA"].coord
+    return coords
+
+# Collect all CA coordinates
+all_coords = []
+
+for model in models:
+    ca_dict = get_ca_by_residue(model)
+    all_coords.append(ca_dict)
+
+# Residues present in all models
+resids = sorted(set.intersection(*(set(d.keys()) for d in all_coords)))
+
+# Convert to array shape: (n models, n residues, 3)
+coords_array = np.array([[model_dict[r] for r in resids] for model_dict in all_coords])
+
+# Solve for RMSF equation
+mean_coords = coords_array.mean(axis=0)
+fluctuations = coords_array - mean_coords
+rmsf = np.sqrt((fluctuations ** 2).sum(axis=2).mean(axis=0))
+
+# Print RMSF
+print("Pseudo-RMSF per residue:")
+for resid, value in zip(resids, rmsf):
+    print(f"Residue {resid} RMSF: {value} Å")
 
