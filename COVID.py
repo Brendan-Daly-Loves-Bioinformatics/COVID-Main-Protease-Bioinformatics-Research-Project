@@ -8,6 +8,7 @@ from Bio import Entrez, SeqIO
 from Bio.Blast import NCBIWWW, NCBIXML
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
+import pandas as pd
 
 Entrez.email = "brendandaly121@gmail.com"
 
@@ -105,12 +106,108 @@ mut_seq_list[131] = "H"
 Mut_Mpro_seq = Seq("".join(mut_seq_list))
 Mut_Mpro = SeqRecord(Mut_Mpro_seq, id="Mut_Mpro", description="P132H Mutant")
 
-print("Mutation applied: Pro132 → His132")
+print("Mutation applied: Pro132 --> His132")
+
+# Run BLAST, which takes a few minutes for each time it's called
+print("Running BLAST for WT Mpro...")
 
 result_handle = NCBIWWW.qblast(program="blastp", database="nr",
 sequence=WT_Mpro.seq, entrez_query="Coronaviridae[Organism]")
 
+with open("WT_Mpro_blast.xml", "w") as out:
+    out.write(result_handle.read())
 
+print("Saved BLAST file: WT_Mpro_blast.xml")
+
+# Parse the BLAST file
+blast_record = NCBIXML.read(open("WT_Mpro_blast.xml"))
+
+# Check conservation of residue 132 across Coronaviridae Mpro
+def check_residue_conservation(blast_record, position):
+    print(f"Checking conservation at residue {position}...")
+
+    for alignment in blast_record.alignments[:10]:
+        for hsp in alignment.hsps:
+            if hsp.align_length < position:
+                continue
+
+            # Alignments are strings with gaps
+            q = hsp.query
+            s = hsp.sbjct
+            m = hsp.match
+
+            # Convert global position to alignment index
+            align_index = 0
+            seq_pos = 0
+
+            while seq_pos < position-1:
+                if q[align_index] != "-":
+                    seq_pos += 1
+                align_index += 1
+
+            res_q = q[align_index]
+            res_s = s[align_index]
+
+            print(f"{alignment.hit_def[:40]}  -->  WT:{res_q}   Homolog:{res_s}")
+# This shows that proline is highly conserved among other coronaviruses, making
+# The Omicron P132H mutation more evolutionarily unusual
+
+check_residue_conservation(blast_record, 132)
+
+# Run BLAST for the mutant to compare to WT
+print("Running BLAST for Mutant Mpro...")
+mut_handle = NCBIWWW.qblast("blastp","nr",Mut_Mpro.seq,expect=10,hitlist_size=50)
+with open("Mut_Mpro_blast.xml", "w") as f:
+    f.write(mut_handle.read())
+print("Saved BLAST file: Mut_Mpro_blast.xml")
+
+# Load WT BLAST results
+with open("WT_Mpro_blast.xml") as f:
+    wt_records = list(NCBIXML.parse(f))[0]
+
+# Load Mutant BLAST results
+with open("Mut_Mpro_blast.xml") as f:
+    mut_records = list(NCBIXML.parse(f))[0]
+
+# Function to extract top hits
+def extract_hits(blast_record, top_n=10):
+    hit_list = []
+    for alignment in blast_record.alignments[:top_n]:
+        hsp = alignment.hsps[0]  # take the top HSP only
+        identity = (hsp.identities / hsp.align_length) * 100
+        hit_list.append({
+            "Hit ID": alignment.hit_id,
+            "Description": alignment.hit_def,
+            "Length": alignment.length,
+            "Score": hsp.score,
+            "E-value": hsp.expect,
+            "Percent Identity": round(identity, 2),
+        })
+    return pd.DataFrame(hit_list)
+
+
+# Extract top 10 hits for each
+df_wt = extract_hits(wt_records, top_n=10)
+df_mut = extract_hits(mut_records, top_n=10)
+
+# Add labels
+df_wt["Query"] = "WT"
+df_mut["Query"] = "Mutant"
+
+
+# Merge WT BLAST and mutant BLAST comparison
+comparison = pd.merge(df_wt,df_mut,left_index=True,right_index=True,suffixes=("_WT", "_Mut"))
+
+print("WT vs Mutant BLAST Comparison (Top 10)")
+print(comparison)
+
+cols = ["Hit ID_WT","Hit ID_Mut","Percent Identity_WT","Percent Identity_Mut",
+"E-value_WT", "E-value_Mut","Score_WT", "Score_Mut"]
+
+print(comparison[cols].to_string(index=False))
+# These comparison results prove that the residue 132 mutation in Omicron effects
+# overall structure, RMSD, and RMSF very little. However, this unusual mutation
+# likely has effects on protein dynamics.
 
 """Calculation of RMSDs, which helps show how different the wild type structure 
 is from the Omicron structure. This is to help us know about why some ligands have
@@ -250,8 +347,9 @@ results = per_residue_rmsd_heavy(WT_chain, Mut_chain)
 
 for res_id, rmsd in results:
     print(f"Residue {res_id} RMSD: {rmsd}")
-# Outliers with large RMSD are likely due to high Z-scores indicating high flexibility. This means the residues were likely in different
-# positions simply due to a lack of rigidity instead of actual structural differences. Residue 132 displays a high RMSD despite being rigid,
+# Outliers with large RMSD are likely due to high Z-scores indicating high flexibility.
+# This means the residues were likely in different positions simply due to a lack of rigidity
+# instead of actual structural differences. Residue 132 displays a high RMSD despite being rigid,
 # Indicating the mutation causes structural differences without involving probability.
 
 
