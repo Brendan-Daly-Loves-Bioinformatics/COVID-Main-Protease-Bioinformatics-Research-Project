@@ -2,10 +2,14 @@
 Download Protein Data Base files and download the structures, read the structures,
 remove ligands and H2O molecules, and save the new structures"""
 
-from Bio.PDB import PDBList, PDBParser, PDBIO, Select, Superimposer, NeighborSearch, PPBuilder
+from Bio.PDB import PDBList, PDBParser, PDBIO, Select, Superimposer, PPBuilder
 import numpy as np
-from Bio.PDB.MMCIFParser import MMCIFParser
-import os
+from Bio import Entrez, SeqIO
+from Bio.Blast import NCBIWWW, NCBIXML
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+
+Entrez.email = "brendandaly121@gmail.com"
 
 # Make a tuple for the two Mpro files and a list of the protein IDs
 pdbl = PDBList()
@@ -75,6 +79,38 @@ Mut_remove = {'HOH', '4WI'}
 io = PDBIO()
 io.set_structure(Mut_structure)
 io.save("Mut_clean.pdb", select=RemoveLigandSet(Mut_remove))
+
+"""Protein BLAST, which helps us find data about homologous proteins"""
+
+# Download WT Mpro using UniProt
+def get_uniprot_fasta(P0DTD1):
+    handle = Entrez.efetch(db="protein", id=P0DTD1, rettype="fasta", retmode="text")
+    seq_record = SeqIO.read(handle, "fasta")
+    handle.close()
+    return seq_record
+
+# P0DTD1 = COVID-19 polyprotein (contains Mpro)
+WT_ID = "P0DTD1"
+WT_full = get_uniprot_fasta(WT_ID)
+
+# Extract Mpro region (residues 3264–3569 from polyprotein)
+WT_Mpro_seq = WT_full.seq[3263:3569]
+WT_Mpro = SeqRecord(WT_Mpro_seq, id="WT_Mpro", description="Wild-type Mpro")
+
+print("WT Mpro length:", len(WT_Mpro.seq))
+
+# Mutant sequence
+mut_seq_list = list(WT_Mpro.seq)
+mut_seq_list[131] = "H"
+Mut_Mpro_seq = Seq("".join(mut_seq_list))
+Mut_Mpro = SeqRecord(Mut_Mpro_seq, id="Mut_Mpro", description="P132H Mutant")
+
+print("Mutation applied: Pro132 → His132")
+
+result_handle = NCBIWWW.qblast(program="blastp", database="nr",
+sequence=WT_Mpro.seq, entrez_query="Coronaviridae[Organism]")
+
+
 
 """Calculation of RMSDs, which helps show how different the wild type structure 
 is from the Omicron structure. This is to help us know about why some ligands have
